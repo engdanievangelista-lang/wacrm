@@ -1,22 +1,28 @@
+import { decrypt } from '@/lib/whatsapp/encryption';
+import { getProvider } from './providers';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 const sendText = vi.fn();
 const sendMedia = vi.fn();
+const updateSpy = vi.fn();
 
 vi.mock('./providers', async () => {
-  const actual = await vi.importActual<typeof import('./providers')>(
-    './providers'
-  );
+  const actual =
+    await vi.importActual<typeof import('./providers')>('./providers');
   return {
     ...actual,
-    getProvider: vi.fn(() => ({
-      id: 'mock',
-      supports: {},
-      sendText,
-      sendMedia,
-      sendReaction: vi.fn(),
-    })),
+    getProvider: vi.fn((cfg: { access_token: string }) => {
+      // Real getProvider decrypts the token; mimic that.
+      decrypt(cfg.access_token);
+      return {
+        id: 'mock',
+        supports: {},
+        sendText,
+        sendMedia,
+        sendReaction: vi.fn(),
+      };
+    }),
   };
 });
 
@@ -50,9 +56,13 @@ function makeDb(provider: 'meta' | 'uazapi'): SupabaseClient {
   return {
     from(table: string) {
       const chain: Record<string, unknown> = {};
-      for (const m of ['select', 'eq', 'update', 'insert']) {
+      for (const m of ['select', 'eq', 'insert']) {
         chain[m] = () => chain;
       }
+      chain.update = (...a: unknown[]) => {
+        updateSpy(...a);
+        return chain;
+      };
       chain.single = async () => ({ data: results[table], error: null });
       chain.maybeSingle = chain.single;
       return chain;
@@ -66,6 +76,10 @@ describe('sendMessageToConversation — provider routing', () => {
   beforeEach(() => {
     sendText.mockReset();
     sendMedia.mockReset();
+    updateSpy.mockReset();
+    vi.mocked(getProvider).mockClear();
+    vi.mocked(decrypt).mockReset();
+    vi.mocked(decrypt).mockReturnValue('plain-token');
   });
 
   it('rejects template for a non-Meta provider', async () => {
@@ -77,6 +91,9 @@ describe('sendMessageToConversation — provider routing', () => {
     expect(err).toBeInstanceOf(SendMessageError);
     expect(err.code).toBe('unsupported_by_provider');
     expect(err.status).toBe(400);
+    expect(getProvider).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 
   it('rejects interactive for a non-Meta provider', async () => {
@@ -92,6 +109,9 @@ describe('sendMessageToConversation — provider routing', () => {
     expect(err).toBeInstanceOf(SendMessageError);
     expect(err.code).toBe('unsupported_by_provider');
     expect(err.status).toBe(400);
+    expect(getProvider).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 
   it('maps a uazapi text failure to provider_error (502)', async () => {
@@ -105,6 +125,21 @@ describe('sendMessageToConversation — provider routing', () => {
     expect(err).toBeInstanceOf(SendMessageError);
     expect(err.code).toBe('provider_error');
     expect(err.status).toBe(502);
+  });
+
+  it('maps a decrypt failure on a uazapi config to provider_error (502)', async () => {
+    vi.mocked(decrypt).mockImplementation(() => {
+      throw new Error('bad ciphertext');
+    });
+    const err = await sendMessageToConversation(makeDb('uazapi'), 'acct-1', {
+      ...base,
+      messageType: 'text',
+      contentText: 'hi',
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(SendMessageError);
+    expect(err.code).toBe('provider_error');
+    expect(err.status).toBe(502);
+    expect(sendText).not.toHaveBeenCalled();
   });
 
   it('keeps meta_error for a Meta text failure', async () => {

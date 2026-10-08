@@ -123,8 +123,13 @@ export function validateSendMessageParams(params: {
   templateName?: string | null;
   interactivePayload?: InteractiveMessagePayload | null;
 }): void {
-  const { messageType, contentText, mediaUrl, templateName, interactivePayload } =
-    params;
+  const {
+    messageType,
+    contentText,
+    mediaUrl,
+    templateName,
+    interactivePayload,
+  } = params;
 
   if (!messageType) {
     throw new SendMessageError('bad_request', 'message_type is required', 400);
@@ -302,22 +307,28 @@ export async function sendMessageToConversation(
     }
   }
 
-  const accessToken = decrypt(config.access_token);
+  // Only Meta needs the token here (template/interactive branches and the
+  // legacy self-heal). Other providers decrypt inside getProvider, within
+  // the send try/catch, so a bad token maps to provider_error.
+  let accessToken = '';
+  if (providerConfig.provider === 'meta') {
+    accessToken = decrypt(config.access_token);
 
-  // Self-heal legacy CBC ciphertexts. Fire-and-forget; idempotent.
-  if (isLegacyFormat(config.access_token)) {
-    void db
-      .from('whatsapp_config')
-      .update({ access_token: encrypt(accessToken) })
-      .eq('id', config.id)
-      .then(({ error }: { error: { message: string } | null }) => {
-        if (error) {
-          console.warn(
-            '[send-message] access_token GCM upgrade failed:',
-            error.message
-          );
-        }
-      });
+    // Self-heal legacy CBC ciphertexts. Fire-and-forget; idempotent.
+    if (isLegacyFormat(config.access_token)) {
+      void db
+        .from('whatsapp_config')
+        .update({ access_token: encrypt(accessToken) })
+        .eq('id', config.id)
+        .then(({ error }: { error: { message: string } | null }) => {
+          if (error) {
+            console.warn(
+              '[send-message] access_token GCM upgrade failed:',
+              error.message
+            );
+          }
+        });
+    }
   }
 
   // Resolve the reply target to its Meta message_id. The parent must
@@ -448,7 +459,9 @@ export async function sendMessageToConversation(
   try {
     // Variants only make sense for a phone number — a BSUID is opaque
     // and has exactly one correct form, so it gets a single attempt.
-    const variants = hasValidPhone ? phoneVariants(sanitizedPhone) : [sendTarget];
+    const variants = hasValidPhone
+      ? phoneVariants(sanitizedPhone)
+      : [sendTarget];
     let lastError: unknown = null;
 
     for (const variant of variants) {
@@ -474,8 +487,15 @@ export async function sendMessageToConversation(
     const message =
       err instanceof Error ? err.message : 'Unknown Meta API error';
     if (providerConfig.provider === 'meta') {
-      console.error('[send-message] Meta send failed for all variants:', message);
-      throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
+      console.error(
+        '[send-message] Meta send failed for all variants:',
+        message
+      );
+      throw new SendMessageError(
+        'meta_error',
+        `Meta API error: ${message}`,
+        502
+      );
     }
     console.error('[send-message] provider send failed:', message);
     throw new SendMessageError(
