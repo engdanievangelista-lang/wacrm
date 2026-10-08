@@ -65,9 +65,9 @@ describe('getProvider', () => {
     )
   })
 
-  it('throws for uazapi until adapter exists', () => {
-    expect(() =>
-      getProvider({ provider: 'uazapi', access_token: 'x' } as WhatsAppConfig),
-    ).toThrow(/uazapi/i)
+  it('builds a uazapi provider with decrypted token', () => {
+    const p = getProvider({ provider: 'uazapi', access_token: 'enc' } as WhatsAppConfig)
+    expect(p.id).toBe('uazapi')
+    expect(decrypt).toHaveBeenCalledWith('enc')
   })
 })

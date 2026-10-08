@@ -1,0 +1,74 @@
+export interface UazapiEnv {
+  baseUrl: string
+  adminToken: string
+}
+
+/** Server-side UAZAPI configuration; null when not fully configured. */
+export function uazapiEnv(): UazapiEnv | null {
+  const baseUrl = process.env.UAZAPI_URL?.trim()
+  const adminToken = process.env.UAZAPI_ADMIN_TOKEN?.trim()
+  if (!baseUrl || !adminToken) return null
+  return { baseUrl: baseUrl.replace(/\/+$/, ''), adminToken }
+}
+
+export function isUazapiEnabled(): boolean {
+  return uazapiEnv() !== null
+}
+
+export class UazapiError extends Error {
+  status: number
+  retryAfterSec?: number
+  constructor(message: string, status: number, retryAfterSec?: number) {
+    super(message)
+    this.name = 'UazapiError'
+    this.status = status
+    this.retryAfterSec = retryAfterSec
+  }
+}
+
+function pathOnly(path: string): string {
+  return path.split('?')[0]
+}
+
+export async function uazapiRequest<T>(o: {
+  path: string
+  method?: 'GET' | 'POST' | 'DELETE'
+  token?: string
+  admin?: boolean
+  body?: unknown
+}): Promise<T> {
+  const env = uazapiEnv()
+  if (!env) throw new UazapiError('UAZAPI is not configured', 0)
+  const method = o.method ?? 'GET'
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (o.admin) headers.admintoken = env.adminToken
+  else if (o.token) headers.token = o.token
+  if (o.body !== undefined) headers['Content-Type'] = 'application/json'
+
+  const res = await fetch(`${env.baseUrl}${o.path}`, {
+    method,
+    headers,
+    body: o.body !== undefined ? JSON.stringify(o.body) : undefined,
+  })
+
+  if (!res.ok) {
+    const ra = Number(res.headers.get('Retry-After'))
+    const retryAfterSec = Number.isFinite(ra) && ra > 0 ? ra : undefined
+    throw new UazapiError(
+      `UAZAPI ${method} ${pathOnly(o.path)} failed with status ${res.status}`,
+      res.status,
+      retryAfterSec,
+    )
+  }
+
+  const text = await res.text()
+  if (!text) return undefined as T
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new UazapiError(
+      `UAZAPI ${method} ${pathOnly(o.path)} returned a non-JSON response`,
+      res.status,
+    )
+  }
+}

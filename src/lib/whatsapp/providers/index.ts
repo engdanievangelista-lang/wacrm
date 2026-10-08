@@ -1,6 +1,7 @@
 import { decrypt } from '@/lib/whatsapp/encryption'
 import type { WhatsAppConfig } from '@/types'
 import { createMetaProvider } from './meta'
+import { createUazapiProvider } from './uazapi'
 import type { ProviderFeature, ProviderId, WhatsAppProvider } from './types'
 
 export type { ProviderFeature, ProviderId, WhatsAppProvider } from './types'
@@ -41,5 +42,8 @@ export function getProvider(config: WhatsAppConfig): WhatsAppProvider {
       accessToken: decrypt(config.access_token),
     })
   }
-  throw new Error(`WhatsApp provider "${config.provider}" is not implemented yet`)
+  if (config.provider === 'uazapi') {
+    return createUazapiProvider(decrypt(config.access_token))
+  }
+  throw new Error(`Unknown WhatsApp provider "${config.provider}"`)
 }
