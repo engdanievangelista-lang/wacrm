@@ -9,6 +9,33 @@ Versions follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0, `MINOR` bumps cover new modules; `PATCH` bumps cover bug fixes
 and polish.
 
+## [Unreleased]
+
+### Added
+
+- **UAZAPI provider (unofficial, QR-code WhatsApp connection).** An
+  account can now connect its number either through the Meta Cloud API or
+  by scanning a QR code through a UAZAPI server, chosen in Settings →
+  WhatsApp connection. Enabled by setting `UAZAPI_URL` and
+  `UAZAPI_ADMIN_TOKEN` on the server; when unset, the option is hidden and
+  Meta-only deployments behave as before. One provider per account:
+  switching requires disconnecting the current connection first. See
+  [docs/uazapi-provider.md](./docs/uazapi-provider.md).
+
+  v1 supports receiving messages, sending text and media, reactions and
+  delivery/read status. Templates, interactive messages, broadcasts,
+  flows, automations, AI auto-reply, messages typed on the phone itself,
+  group chats and contacts that arrive only as `@lid` are not supported;
+  they are disabled in the UI and the API returns `unsupported_by_provider`
+  (HTTP 400). UAZAPI is not an official WhatsApp API: a number linked this
+  way can be restricted or banned. It was tested against the vendor's
+  OpenAPI spec with mocked HTTP, not yet against a live server.
+
+> **Migration required:** apply `supabase/migrations/043_whatsapp_provider.sql`
+> (adds `provider`, `provider_config` and `webhook_secret` to
+> `whatsapp_config`, makes `phone_number_id` optional for non-Meta rows and
+> allows the status `connecting`; existing rows become `provider = 'meta'`).
+
 ## [0.8.1] — 2026-07-10
 
 Fixes inbound chats fragmenting into multiple threads for the same
