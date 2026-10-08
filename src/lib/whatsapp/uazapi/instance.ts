@@ -4,7 +4,7 @@ export type InstanceState = 'disconnected' | 'connecting' | 'connected' | 'hiber
 
 const STATES: readonly InstanceState[] = ['disconnected', 'connecting', 'connected', 'hibernated']
 
-function toState(v: unknown): InstanceState {
+export function toState(v: unknown): InstanceState {
   return typeof v === 'string' && (STATES as readonly string[]).includes(v)
     ? (v as InstanceState)
     : 'disconnected'
