@@ -29,6 +29,10 @@ interface OverviewCounts {
 interface WhatsAppStatus {
   configured: boolean;
   connected: boolean;
+  /** UAZAPI (QR) rows only: pairing started, phone not linked yet. */
+  awaitingScan?: boolean;
+  /** UAZAPI (QR) rows only: the linked number. */
+  phone?: string | null;
 }
 
 export function SettingsOverview({
@@ -42,6 +46,7 @@ export function SettingsOverview({
   const t = useTranslations('Settings.overview');
   const tRoles = useTranslations('Settings.roles');
   const tSections = useTranslations('Settings.sections');
+  const tUazapi = useTranslations('Settings.whatsapp.uazapi');
 
   const [counts, setCounts] = useState<OverviewCounts | null>(null);
   const [countsLoading, setCountsLoading] = useState(true);
@@ -123,12 +128,26 @@ export function SettingsOverview({
       const [row, health] = await Promise.allSettled([
         supabase
           .from('whatsapp_config')
-          .select('phone_number_id')
+          .select('phone_number_id, provider, status, provider_config')
           .eq('account_id', acctId)
           .maybeSingle(),
         fetch('/api/whatsapp/config', { cache: 'no-store' }).then((r) => r.json()),
       ]);
       if (cancelled) return;
+      // UAZAPI (QR) rows have no phone_number_id: their state is the
+      // mirrored `status` and the number lives in provider_config.
+      const rowData = row.status === 'fulfilled' ? row.value.data : null;
+      if (rowData?.provider === 'uazapi') {
+        const pc = (rowData.provider_config ?? {}) as { phone?: string | null };
+        setWhatsapp({
+          configured: true,
+          connected: rowData.status === 'connected',
+          awaitingScan: rowData.status === 'connecting',
+          phone: pc.phone ?? null,
+        });
+        setWhatsappLoading(false);
+        return;
+      }
       setWhatsapp({
         configured: row.status === 'fulfilled' && !!row.value.data?.phone_number_id,
         connected: health.status === 'fulfilled' && !!health.value?.connected,
@@ -166,6 +185,11 @@ export function SettingsOverview({
       ) : whatsapp.connected ? (
         <>
           <StatusDot tone="ok" /> {t('connected')}
+          {whatsapp.phone ? ` · +${whatsapp.phone.replace(/^\+/, '')}` : null}
+        </>
+      ) : whatsapp.awaitingScan ? (
+        <>
+          <StatusDot tone="muted" /> {tUazapi('overviewWaitingScan')}
         </>
       ) : (
         <>
