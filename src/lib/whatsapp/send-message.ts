@@ -22,9 +22,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import {
-  sendTextMessage,
   sendTemplateMessage,
-  sendMediaMessage,
   sendInteractiveButtons,
   sendInteractiveList,
   type MediaKind,
@@ -34,6 +32,13 @@ import {
   interactivePayloadPreviewText,
   type InteractiveMessagePayload,
 } from '@/lib/whatsapp/interactive';
+import {
+  getProvider,
+  assertSupports,
+  UnsupportedByProviderError,
+  type WhatsAppProvider,
+} from '@/lib/whatsapp/providers';
+import type { WhatsAppConfig } from '@/types';
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import {
@@ -269,6 +274,34 @@ export async function sendMessageToConversation(
     );
   }
 
+  // Rows predating the provider column (and bare mocks) are Meta.
+  const providerConfig = {
+    ...config,
+    provider: config.provider ?? 'meta',
+  } as WhatsAppConfig;
+
+  // Template / interactive are Meta-only features — reject early for
+  // any provider that doesn't support them.
+  if (messageType === 'template' || messageType === 'interactive') {
+    try {
+      assertSupports(
+        providerConfig,
+        messageType === 'template' ? 'templates' : 'interactive'
+      );
+    } catch (err) {
+      if (err instanceof UnsupportedByProviderError) {
+        throw new SendMessageError(
+          'unsupported_by_provider',
+          `${
+            messageType === 'template' ? 'Template' : 'Interactive'
+          } messages are not supported by the "${err.provider}" WhatsApp provider.`,
+          400
+        );
+      }
+      throw err;
+    }
+  }
+
   const accessToken = decrypt(config.access_token);
 
   // Self-heal legacy CBC ciphertexts. Fire-and-forget; idempotent.
@@ -339,6 +372,12 @@ export async function sendMessageToConversation(
     sendLanguage = resolved.language;
   }
 
+  // Text/media go through the provider (created lazily; template and
+  // interactive stay direct Meta calls, reachable only for Meta).
+  let provider: WhatsAppProvider | null = null;
+  const getSendProvider = (): WhatsAppProvider =>
+    (provider ??= getProvider(providerConfig));
+
   const attempt = async (phone: string): Promise<string> => {
     if (messageType === 'template') {
       const result = await sendTemplateMessage({
@@ -355,15 +394,13 @@ export async function sendMessageToConversation(
       return result.messageId;
     }
     if (isMediaKind) {
-      const result = await sendMediaMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+      const result = await getSendProvider().sendMedia({
         to: phone,
         kind: messageType as MediaKind,
-        link: mediaUrl!,
+        url: mediaUrl!,
         caption: contentText || undefined,
         filename: filename || undefined,
-        contextMessageId,
+        replyToMessageId: contextMessageId,
       });
       return result.messageId;
     }
@@ -395,12 +432,10 @@ export async function sendMessageToConversation(
       });
       return result.messageId;
     }
-    const result = await sendTextMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+    const result = await getSendProvider().sendText({
       to: phone,
       text: contentText!,
-      contextMessageId,
+      replyToMessageId: contextMessageId,
     });
     return result.messageId;
   };
@@ -438,8 +473,16 @@ export async function sendMessageToConversation(
   } catch (err) {
     const message =
       err instanceof Error ? err.message : 'Unknown Meta API error';
-    console.error('[send-message] Meta send failed for all variants:', message);
-    throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
+    if (providerConfig.provider === 'meta') {
+      console.error('[send-message] Meta send failed for all variants:', message);
+      throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
+    }
+    console.error('[send-message] provider send failed:', message);
+    throw new SendMessageError(
+      'provider_error',
+      `WhatsApp provider error: ${message}`,
+      502
+    );
   }
 
   if (hasValidPhone && workingPhone !== sanitizedPhone) {
