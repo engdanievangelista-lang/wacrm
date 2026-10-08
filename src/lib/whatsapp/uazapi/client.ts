@@ -26,6 +26,9 @@ export class UazapiError extends Error {
   }
 }
 
+/** Max time to wait for a UAZAPI response before giving up. */
+export const UAZAPI_REQUEST_TIMEOUT_MS = 15_000
+
 function pathOnly(path: string): string {
   return path.split('?')[0]
 }
@@ -45,11 +48,22 @@ export async function uazapiRequest<T>(o: {
   else if (o.token) headers.token = o.token
   if (o.body !== undefined) headers['Content-Type'] = 'application/json'
 
-  const res = await fetch(`${env.baseUrl}${o.path}`, {
-    method,
-    headers,
-    body: o.body !== undefined ? JSON.stringify(o.body) : undefined,
-  })
+  let res: Response
+  try {
+    res = await fetch(`${env.baseUrl}${o.path}`, {
+      method,
+      headers,
+      body: o.body !== undefined ? JSON.stringify(o.body) : undefined,
+      signal: AbortSignal.timeout(UAZAPI_REQUEST_TIMEOUT_MS),
+    })
+  } catch (err) {
+    // Never forward the original error: it can echo URLs or headers.
+    const name = err instanceof Error ? err.name : ''
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new UazapiError(`UAZAPI ${method} ${pathOnly(o.path)} timed out`, 504)
+    }
+    throw new UazapiError(`UAZAPI ${method} ${pathOnly(o.path)} could not be reached`, 502)
+  }
 
   if (!res.ok) {
     const ra = Number(res.headers.get('Retry-After'))
