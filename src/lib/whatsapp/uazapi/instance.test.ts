@@ -52,6 +52,25 @@ describe('createInstance', () => {
   })
 })
 
+describe('createInstance malformed responses', () => {
+  it.each([
+    ['missing token', { instance: { id: 'inst-1' } }],
+    ['missing instance.id', { token: 'leaky-tok', instance: {} }],
+    ['empty object', {}],
+  ])('throws UazapiError on %s without leaking the token', async (_n, body) => {
+    fetchMock.mockResolvedValue(reply(200, body))
+    const err = await createInstance('x').catch((e) => e)
+    expect(err).toBeInstanceOf(UazapiError)
+    expect(err.status).toBe(502)
+    expect(err.message).not.toContain('leaky-tok')
+  })
+
+  it('throws on an empty body', async () => {
+    fetchMock.mockResolvedValue(reply(200))
+    await expect(createInstance('x')).rejects.toBeInstanceOf(UazapiError)
+  })
+})
+
 describe('configureWebhook', () => {
   it('POSTs /webhook in simple mode with the required payload', async () => {
     fetchMock.mockResolvedValue(reply(200, []))

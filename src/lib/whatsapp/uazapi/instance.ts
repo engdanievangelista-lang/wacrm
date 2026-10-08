@@ -1,4 +1,4 @@
-import { uazapiRequest } from './client'
+import { UazapiError, uazapiRequest } from './client'
 
 export type InstanceState = 'disconnected' | 'connecting' | 'connected' | 'hibernated'
 
@@ -27,7 +27,15 @@ export async function createInstance(
     admin: true,
     body: { name },
   })
-  return { instanceId: res?.instance?.id ?? '', token: res?.token ?? '' }
+  const instanceId = res?.instance?.id
+  const token = res?.token
+  if (!instanceId || !token) {
+    throw new UazapiError(
+      'UAZAPI create-instance response did not include a token and instance id',
+      502,
+    )
+  }
+  return { instanceId, token }
 }
 
 /** Register the single webhook (simple mode: no action/id). */
