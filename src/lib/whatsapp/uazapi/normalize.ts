@@ -52,7 +52,7 @@ export function normalizeMessagesEvent(
     const root = asRecord(body)
     const message = asRecord(root?.message) as UazapiMessage | null
     if (!message) return null
-    if (message.fromMe || message.isGroup) return null
+    if (message.fromMe || message.isGroup || message.wasSentByApi) return null
 
     const chatid = str(message.chatid)
     if (!chatid) return null
@@ -87,7 +87,7 @@ export function normalizeMessagesEvent(
     }
 
     const textContent = async (): Promise<InboundContent> => ({
-      contentText: text ?? null,
+      contentText: text || null,
       mediaUrl: null,
       mediaType: null,
       interactiveReplyId: null,

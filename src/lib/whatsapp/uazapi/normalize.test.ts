@@ -118,10 +118,17 @@ describe('normalizeMessagesEvent', () => {
     expect(m.reaction).toEqual({ targetExternalId: 'TARGET', emoji: '👍' })
   })
 
-  it('unknown types fall back to text with fallbackText', () => {
+  it('drops messages sent by the API', () => {
+    expect(
+      normalizeMessagesEvent(msgBody({ wasSentByApi: true, fromMe: false }), deps()),
+    ).toBeNull()
+  })
+
+  it('unknown types fall back to text with fallbackText', async () => {
     const a = normalizeMessagesEvent(msgBody({ messageType: 'LocationMessage', text: '' }), deps())!
     expect(a.rawType).toBe('text')
     expect(a.fallbackText).toBe('[LocationMessage]')
+    expect((await a.loadContent()).contentText).toBeNull()
     const b = normalizeMessagesEvent(msgBody({ messageType: 'LocationMessage', text: 'hi' }), deps())!
     expect(b.fallbackText).toBe('hi')
   })
