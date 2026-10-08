@@ -20,11 +20,11 @@ function makeDb() {
 
 let db = makeDb()
 vi.mock('@/lib/supabase/server', () => ({ createClient: vi.fn(async () => db) }))
-const decryptMock = vi.hoisted(() => vi.fn((..._a: string[]) => 'plaintext-token'))
+const decryptMock = vi.hoisted(() => vi.fn<(v: string) => string>(() => 'plaintext-token'))
 vi.mock('@/lib/whatsapp/encryption', () => ({ decrypt: decryptMock }))
 const meta = vi.hoisted(() => ({
-  verifyPhoneNumber: vi.fn(async (...args: unknown[]) => (args, {})),
-  getSubscribedApps: vi.fn(async (...args: unknown[]) => (args, [{ id: 'app' }])),
+  verifyPhoneNumber: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({})),
+  getSubscribedApps: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => [{ id: 'app' }]),
 }))
 vi.mock('@/lib/whatsapp/meta-api', () => meta)
 const fetchSpy = vi.fn(async () => new Response('{}', { status: 200 }))
