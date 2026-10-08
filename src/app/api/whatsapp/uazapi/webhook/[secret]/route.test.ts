@@ -330,11 +330,32 @@ describe('UAZAPI webhook route', () => {
       externalId: 'MSG_A',
       status: 'read',
       timestampSec: 1788868800,
+      accountId: 'acc-1',
     })
     expect(h.applyMessageStatus.mock.calls[1][0]).toMatchObject({
       externalId: 'MSG_B',
       status: 'read',
+      accountId: 'acc-1',
     })
+  })
+
+  it('messages_update: one failing status does not abort the rest of the batch', async () => {
+    h.applyMessageStatus.mockRejectedValueOnce(new Error('db down'))
+    const res = await call({
+      EventType: 'messages_update',
+      token: INSTANCE_TOKEN,
+      type: 'ReadReceipt',
+      state: 'Delivered',
+      event: { MessageIDs: ['MSG_A', 'MSG_B', 'MSG_C'], Timestamp: 1788868800 },
+    })
+    expect(res.init?.status).toBe(200)
+    expect(h.applyMessageStatus).toHaveBeenCalledTimes(3)
+    expect(h.applyMessageStatus.mock.calls.map((c) => c[0].externalId)).toEqual([
+      'MSG_A',
+      'MSG_B',
+      'MSG_C',
+    ])
+    expect(logs.some((l) => l.includes('db down'))).toBe(true)
   })
 
   it.each([
@@ -465,6 +486,59 @@ describe('UAZAPI webhook loadMedia', () => {
       mediaType: 'audio/ogg',
       interactiveReplyId: null,
     })
+  })
+
+  it('streamed body over the cap with no content-length is abandoned mid-stream', async () => {
+    const CHUNK = 1024 * 1024
+    const TOTAL_CHUNKS = 40 // 40 MB offered, cap is 16 MB
+    let pulled = 0
+    let cancelled = false
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= TOTAL_CHUNKS) {
+          controller.close()
+          return
+        }
+        pulled++
+        controller.enqueue(new Uint8Array(CHUNK))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    fetchMock.mockResolvedValue(
+      new Response(stream, { status: 200, headers: { 'content-type': 'image/jpeg' } }),
+    )
+    await call(imageEvent())
+    const content = await persistedMessage().loadContent()
+    expect(content.mediaUrl).toBeNull()
+    expect(content.contentText).toBe('legenda')
+    expect(h.state.storageUploads).toEqual([])
+    expect(cancelled).toBe(true)
+    // Stopped just past the 16 MB cap, far short of the 40 MB offered.
+    expect(pulled).toBeLessThan(20)
+  })
+
+  it('declared content-length over the cap is refused before reading', async () => {
+    let pulled = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++
+        controller.enqueue(new Uint8Array(10))
+        controller.close()
+      },
+    })
+    fetchMock.mockResolvedValue(
+      new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'image/jpeg', 'content-length': String(50 * 1024 * 1024) },
+      }),
+    )
+    await call(imageEvent())
+    const content = await persistedMessage().loadContent()
+    expect(content.mediaUrl).toBeNull()
+    expect(h.state.storageUploads).toEqual([])
+    expect(pulled).toBeLessThanOrEqual(1)
   })
 
   it('a redirect response is not followed and falls back', async () => {

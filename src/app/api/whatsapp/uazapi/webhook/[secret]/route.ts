@@ -148,8 +148,18 @@ async function processEvent(body: Record<string, unknown>, config: UazapiConfigR
       return
     }
     case 'messages_update': {
+      // Scoped to this config's account: the payload is not signed by the
+      // platform, so a status event must never touch another tenant's rows.
+      // Each id is isolated so one failure doesn't drop the rest.
       for (const update of normalizeUpdateEvent(body)) {
-        await applyMessageStatus(update)
+        try {
+          await applyMessageStatus({ ...update, accountId: config.account_id })
+        } catch (error) {
+          console.error(
+            `[uazapi-webhook] status update failed for message ${update.externalId}:`,
+            error instanceof Error ? error.message : 'unknown error',
+          )
+        }
       }
       return
     }
@@ -215,15 +225,40 @@ async function downloadPublicFile(args: {
     signal: AbortSignal.timeout(MEDIA_FETCH_TIMEOUT_MS),
   })
   if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
     throw new Error(`UAZAPI media download failed: ${response.status}`)
   }
   const declared = Number(response.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > MEDIA_MAX_BYTES) {
+    await response.body?.cancel().catch(() => {})
     throw new Error(`UAZAPI media too large: ${declared} bytes`)
   }
   const contentType = response.headers.get('content-type') || 'application/octet-stream'
-  const buffer = Buffer.from(await response.arrayBuffer())
+  const buffer = await readCapped(response, MEDIA_MAX_BYTES)
   return { buffer, contentType }
+}
+
+/**
+ * Read a response body, abandoning it as soon as it passes `cap` bytes.
+ * The Content-Length pre-check alone is not enough: a chunked response
+ * declares no length, and buffering it whole could spike serverless memory.
+ */
+async function readCapped(response: Response, cap: number): Promise<Buffer> {
+  if (!response.body) return Buffer.alloc(0)
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > cap) {
+      await reader.cancel().catch(() => {})
+      throw new Error(`UAZAPI media too large: over ${cap} bytes`)
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks, total)
 }
 
 /**
