@@ -6,6 +6,7 @@ import {
   toErrorResponse,
 } from '@/lib/auth/account'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { providerGuardResponse } from '@/lib/whatsapp/providers/guards'
 import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
 import type { TemplateButton, TemplateSampleValues } from '@/types'
 
@@ -150,6 +151,9 @@ export async function POST() {
         { status: 400 },
       )
     }
+
+    const blocked = providerGuardResponse(config, 'templates')
+    if (blocked) return blocked
 
     if (!config.waba_id) {
       return NextResponse.json(

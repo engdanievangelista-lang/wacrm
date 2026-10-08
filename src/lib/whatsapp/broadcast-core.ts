@@ -20,6 +20,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
+import { assertSupports, UnsupportedByProviderError } from '@/lib/whatsapp/providers';
+import { unsupportedByProviderMessage } from '@/lib/whatsapp/providers/guards';
 import {
   parseInternationalPhone,
   phoneVariants,
@@ -76,6 +78,28 @@ export interface BroadcastPlan {
 const MAX_RECIPIENTS = 1000;
 
 /**
+ * Broadcasts are template sends over the Meta API. Map the provider
+ * guard to a BroadcastError so both routes answer 400
+ * `unsupported_by_provider` before any recipient work happens.
+ */
+export function assertBroadcastSupported(
+  config: Parameters<typeof assertSupports>[0]
+): void {
+  try {
+    assertSupports(config, 'broadcast');
+  } catch (err) {
+    if (err instanceof UnsupportedByProviderError) {
+      throw new BroadcastError(
+        'unsupported_by_provider',
+        unsupportedByProviderMessage(err),
+        400
+      );
+    }
+    throw err;
+  }
+}
+
+/**
  * Validate + persist a broadcast, resolving each recipient to a
  * contact. Returns a plan for {@link deliverBroadcast}. Throws
  * {@link BroadcastError} on bad input / missing config / a malformed
@@ -121,6 +145,7 @@ export async function createBroadcast(
       400
     );
   }
+  assertBroadcastSupported(config);
   const accessToken = decrypt(config.access_token);
 
   // Template row (once) for header/button components; guard a

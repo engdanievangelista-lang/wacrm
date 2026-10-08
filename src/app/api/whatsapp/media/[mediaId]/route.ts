@@ -62,6 +62,18 @@ export async function GET(
       )
     }
 
+    // Media ids are Meta media ids resolved with the Meta token; a UAZAPI
+    // account has neither (its media is persisted at inbound time).
+    if ((config.provider ?? 'meta') !== 'meta') {
+      return NextResponse.json(
+        {
+          error: `Fetching media by Meta media id is not available for the "${config.provider}" WhatsApp provider.`,
+          code: 'unsupported_by_provider',
+        },
+        { status: 400 }
+      )
+    }
+
     const accessToken = decrypt(config.access_token)
 
     // Get the download URL from Meta

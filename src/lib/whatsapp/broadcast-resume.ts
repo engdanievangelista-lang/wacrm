@@ -18,7 +18,11 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { BroadcastError, type BroadcastPlan } from '@/lib/whatsapp/broadcast-core';
+import {
+  assertBroadcastSupported,
+  BroadcastError,
+  type BroadcastPlan,
+} from '@/lib/whatsapp/broadcast-core';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
@@ -217,6 +221,8 @@ export async function planBroadcastResume(
       400
     );
   }
+
+  assertBroadcastSupported(config);
 
   const resolvedTemplate = await resolveTemplateRow(
     db,

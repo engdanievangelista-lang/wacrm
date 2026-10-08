@@ -23,12 +23,13 @@ const CAPABILITIES: Record<ProviderId, Record<ProviderFeature, boolean>> = {
   uazapi: { templates: false, interactive: false, broadcast: false, automations: false },
 }
 
+/** A config without a `provider` (legacy rows / partial mocks) is Meta. */
 export function assertSupports(
   config: Pick<WhatsAppConfig, 'provider'>,
   feature: ProviderFeature,
 ): void {
-  if (!CAPABILITIES[config.provider][feature]) {
-    throw new UnsupportedByProviderError(config.provider, feature)
+  if (!CAPABILITIES[config.provider ?? 'meta'][feature]) {
+    throw new UnsupportedByProviderError(config.provider ?? 'meta', feature)
   }
 }
 
