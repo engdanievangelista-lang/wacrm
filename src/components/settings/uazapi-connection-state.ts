@@ -31,6 +31,8 @@ export type UazapiErrorKind =
   | 'instance_gone'
   /** Create/connect request failed; "Generate QR" retries. */
   | 'start_failed'
+  /** The create was refused (400): another connection must be removed first. */
+  | 'existing_connection'
   /** 401/403 — the viewer may not manage the connection. */
   | 'forbidden'
   /** The instance went to sleep; a new QR is needed. */
@@ -77,6 +79,8 @@ export type UazapiEvent =
       type: 'http_error';
       /** 'start' = config create / connect; 'poll' = status. 0 = network. */
       during: 'start' | 'poll';
+      /** Which start request failed: the config create or the connect. */
+      request?: 'create' | 'connect';
       status: number;
       retryAfterSec: number | null;
       now: number;
@@ -279,6 +283,9 @@ export function uazapiReducer(s: UazapiUiState, e: UazapiEvent): UazapiUiState {
             retryAfterSec: e.retryAfterSec,
           };
         }
+        if (e.status === 400 && e.request === 'create') {
+          return backToIdle(s, 'existing_connection');
+        }
         return backToIdle(s, 'start_failed');
       }
 
@@ -350,4 +357,42 @@ export function switchNeedsDisconnect(
   if (!current.provider || current.provider === target) return false;
   if (current.provider === 'uazapi') return true;
   return current.connected === true;
+}
+
+export interface ProviderConfigSnapshot {
+  provider: WhatsAppProvider | null;
+  connected: boolean;
+  status: string | null;
+}
+
+/**
+ * What picking `target` in the selector should do. `fresh` is a
+ * re-fetch of GET /api/whatsapp/config made at click time (the Meta form
+ * may have saved a connection since the panel loaded); null when that
+ * re-fetch failed, in which case the cached snapshot decides.
+ */
+export function decideProviderSwitch(args: {
+  selected: WhatsAppProvider;
+  target: WhatsAppProvider;
+  cached: ProviderConfigSnapshot | null;
+  fresh: ProviderConfigSnapshot | null;
+}): 'none' | 'switch' | 'confirm' {
+  if (args.target === args.selected) return 'none';
+  const basis = args.fresh ?? args.cached;
+  if (!basis) return 'switch';
+  return switchNeedsDisconnect(basis, args.target) ? 'confirm' : 'switch';
+}
+
+/**
+ * Server-side choice for Settings → WhatsApp: the provider panel (which
+ * fetches the config and shows the selector) only when this deployment
+ * offers UAZAPI, or when the account is still on a UAZAPI row after the
+ * env was removed (so it can be disconnected). Otherwise the plain Meta
+ * form, with no extra request.
+ */
+export function shouldUseProviderPanel(args: {
+  uazapiEnabled: boolean;
+  rowProvider: string | null;
+}): boolean {
+  return args.uazapiEnabled || args.rowProvider === 'uazapi';
 }

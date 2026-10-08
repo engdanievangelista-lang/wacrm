@@ -8,6 +8,8 @@ import {
   initialUazapiState,
   parseRetryAfter,
   switchNeedsDisconnect,
+  decideProviderSwitch,
+  shouldUseProviderPanel,
   uazapiReducer,
   type UazapiUiState,
 } from './uazapi-connection-state';
@@ -474,5 +476,133 @@ describe('switchNeedsDisconnect', () => {
         switchNeedsDisconnect({ provider: 'uazapi', status }, 'meta')
       ).toBe(true);
     }
+  });
+});
+
+describe('create-step 400 (existing connection)', () => {
+  it('a 400 from the config create says an existing connection must go first', () => {
+    let s = uazapiReducer(initialUazapiState(null), { type: 'start', now: T0 });
+    s = uazapiReducer(s, {
+      type: 'http_error',
+      during: 'start',
+      request: 'create',
+      status: 400,
+      retryAfterSec: null,
+      now: T0,
+    });
+    expect(s.phase).toBe('idle');
+    expect(s.error).toBe('existing_connection');
+    expect(s.shouldPoll).toBe(false);
+  });
+
+  it('a 400 from connect stays the generic start failure', () => {
+    let s = uazapiReducer(initialUazapiState(null), { type: 'start', now: T0 });
+    s = uazapiReducer(s, {
+      type: 'http_error',
+      during: 'start',
+      request: 'connect',
+      status: 400,
+      retryAfterSec: null,
+      now: T0,
+    });
+    expect(s.error).toBe('start_failed');
+  });
+});
+
+describe('decideProviderSwitch', () => {
+  const metaConnected = {
+    provider: 'meta' as const,
+    connected: true,
+    status: null,
+  };
+  const nothing = { provider: null, connected: false, status: null };
+
+  it('same target: nothing to do', () => {
+    expect(
+      decideProviderSwitch({
+        selected: 'meta',
+        target: 'meta',
+        cached: nothing,
+        fresh: nothing,
+      })
+    ).toBe('none');
+  });
+
+  it('uses the fresh config over a stale cache (Meta saved in this session)', () => {
+    expect(
+      decideProviderSwitch({
+        selected: 'meta',
+        target: 'uazapi',
+        cached: nothing,
+        fresh: metaConnected,
+      })
+    ).toBe('confirm');
+  });
+
+  it('a fresh "nothing saved" wins over a stale cached connection', () => {
+    expect(
+      decideProviderSwitch({
+        selected: 'meta',
+        target: 'uazapi',
+        cached: metaConnected,
+        fresh: nothing,
+      })
+    ).toBe('switch');
+  });
+
+  it('falls back to the cached config when the re-fetch failed', () => {
+    expect(
+      decideProviderSwitch({
+        selected: 'meta',
+        target: 'uazapi',
+        cached: metaConnected,
+        fresh: null,
+      })
+    ).toBe('confirm');
+    expect(
+      decideProviderSwitch({
+        selected: 'meta',
+        target: 'uazapi',
+        cached: nothing,
+        fresh: null,
+      })
+    ).toBe('switch');
+  });
+
+  it('any UAZAPI row needs a confirm to go to Meta', () => {
+    expect(
+      decideProviderSwitch({
+        selected: 'uazapi',
+        target: 'meta',
+        cached: nothing,
+        fresh: { provider: 'uazapi', connected: false, status: 'disconnected' },
+      })
+    ).toBe('confirm');
+  });
+});
+
+describe('shouldUseProviderPanel', () => {
+  it('Meta-only deployment with no UAZAPI row: plain Meta form', () => {
+    expect(
+      shouldUseProviderPanel({ uazapiEnabled: false, rowProvider: null })
+    ).toBe(false);
+    expect(
+      shouldUseProviderPanel({ uazapiEnabled: false, rowProvider: 'meta' })
+    ).toBe(false);
+  });
+
+  it('UAZAPI enabled: provider panel', () => {
+    expect(
+      shouldUseProviderPanel({ uazapiEnabled: true, rowProvider: null })
+    ).toBe(true);
+    expect(
+      shouldUseProviderPanel({ uazapiEnabled: true, rowProvider: 'meta' })
+    ).toBe(true);
+  });
+
+  it('env removed but the account is stranded on UAZAPI: provider panel so it can disconnect', () => {
+    expect(
+      shouldUseProviderPanel({ uazapiEnabled: false, rowProvider: 'uazapi' })
+    ).toBe(true);
   });
 });

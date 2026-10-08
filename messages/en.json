@@ -1719,6 +1719,8 @@
         "errorUnavailable": "Could not reach the WhatsApp server. Retrying automatically…",
         "errorInstanceGone": "This connection no longer exists on the WhatsApp server. Generate a new QR code to connect again.",
         "errorStartFailed": "Could not start the QR code connection. Please try again.",
+        "errorExistingConnection": "This workspace already has a WhatsApp connection. Disconnect it before generating a QR code.",
+        "notEnabled": "QR code connections are not enabled on this server. You can still disconnect the saved connection.",
         "errorForbidden": "Only admins can manage the WhatsApp connection.",
         "errorHibernated": "The connection went to sleep. Generate a new QR code to reconnect.",
         "retryNow": "Retry now",

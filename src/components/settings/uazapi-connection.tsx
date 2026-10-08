@@ -113,10 +113,13 @@ function isAbort(err: unknown): boolean {
  */
 export function UazapiConnection({
   initial,
+  canCreate = true,
   onChanged,
 }: {
   /** The saved UAZAPI row (from GET /api/whatsapp/config), or null. */
   initial: UazapiSavedConfig | null;
+  /** False when the server no longer offers UAZAPI (stranded row): no QR. */
+  canCreate?: boolean;
   /** Called after the connection was created, linked or removed. */
   onChanged?: () => void;
 }) {
@@ -132,6 +135,8 @@ export function UazapiConnection({
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  // Whether a UAZAPI row is saved, so even an idle one can be removed.
+  const [hasRow, setHasRow] = useState(initial !== null);
 
   // Aborts every in-flight request on unmount.
   const lifetime = useRef<AbortController | null>(null);
@@ -218,12 +223,14 @@ export function UazapiConnection({
           dispatch({
             type: 'http_error',
             during: 'start',
+            request: 'create',
             status: created.status,
             retryAfterSec: created.retryAfterSec,
             now: Date.now(),
           });
           return;
         }
+        setHasRow(true);
         onChanged?.();
       }
       const connected = await call('/api/whatsapp/uazapi/connect', {
@@ -234,6 +241,7 @@ export function UazapiConnection({
         dispatch({
           type: 'http_error',
           during: 'start',
+          request: 'connect',
           status: connected.status,
           retryAfterSec: connected.retryAfterSec,
           now: Date.now(),
@@ -268,6 +276,7 @@ export function UazapiConnection({
         return;
       }
       dispatch({ type: 'reset' });
+      setHasRow(false);
       setConfirmOpen(false);
       toast.success(t('disconnectedToast'));
       onChanged?.();
@@ -287,6 +296,8 @@ export function UazapiConnection({
         return t('errorUnavailable');
       case 'instance_gone':
         return t('errorInstanceGone');
+      case 'existing_connection':
+        return t('errorExistingConnection');
       case 'start_failed':
         return t('errorStartFailed');
       case 'forbidden':
@@ -372,7 +383,7 @@ export function UazapiConnection({
                 {t('waitingForQr')}
               </p>
             ) : null}
-            {phase === 'qr' && state.qrExpired ? (
+            {canCreate && phase === 'qr' && state.qrExpired ? (
               <p className="text-muted-foreground">{t('qrExpired')}</p>
             ) : null}
             {phase === 'idle' ? (
@@ -385,6 +396,9 @@ export function UazapiConnection({
 
           {!canEditSettings ? (
             <p className="text-muted-foreground text-xs">{t('adminOnly')}</p>
+          ) : null}
+          {!canCreate ? (
+            <p className="text-muted-foreground text-xs">{t('notEnabled')}</p>
           ) : null}
 
           {phase === 'qr' && state.qr ? (
@@ -443,7 +457,7 @@ export function UazapiConnection({
           ) : null}
 
           <div className="flex flex-wrap gap-2">
-            {phase === 'idle' || phase === 'starting' ? (
+            {canCreate && (phase === 'idle' || phase === 'starting') ? (
               <Button onClick={generateQr} disabled={busy || !canEditSettings}>
                 {busy ? (
                   <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -468,7 +482,8 @@ export function UazapiConnection({
               </Button>
             ) : null}
 
-            {phase !== 'idle' && phase !== 'starting' ? (
+            {(phase !== 'idle' && phase !== 'starting') ||
+            (phase === 'idle' && hasRow) ? (
               <Button
                 variant="destructive"
                 onClick={() => setConfirmOpen(true)}

@@ -1709,6 +1709,8 @@
         "errorUnavailable": "Não foi possível contatar o servidor do WhatsApp. Tentando novamente automaticamente…",
         "errorInstanceGone": "Esta conexão não existe mais no servidor do WhatsApp. Gere um novo QR code para conectar novamente.",
         "errorStartFailed": "Não foi possível iniciar a conexão por QR code. Tente novamente.",
+        "errorExistingConnection": "Este espaço de trabalho já tem uma conexão do WhatsApp. Desconecte-a antes de gerar um QR code.",
+        "notEnabled": "As conexões por QR code não estão habilitadas neste servidor. Você ainda pode desconectar a conexão salva.",
         "errorForbidden": "Somente administradores podem gerenciar a conexão do WhatsApp.",
         "errorHibernated": "A conexão entrou em hibernação. Gere um novo QR code para reconectar.",
         "retryNow": "Tentar agora",

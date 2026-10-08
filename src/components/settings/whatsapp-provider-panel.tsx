@@ -23,7 +23,7 @@ import { SettingsPanelHead } from './settings-panel-head';
 import { UazapiConnection, type UazapiSavedConfig } from './uazapi-connection';
 import { WhatsAppConfig } from './whatsapp-config';
 import {
-  switchNeedsDisconnect,
+  decideProviderSwitch,
   type WhatsAppProvider,
 } from './uazapi-connection-state';
 
@@ -69,13 +69,22 @@ async function fetchConfigInfo(): Promise<ConfigInfo | null> {
 }
 
 /**
- * Settings → WhatsApp. On a deployment without UAZAPI this is exactly the
- * Meta form. With UAZAPI enabled it adds a connection-type selector and
- * swaps between the Meta form and the QR-code connection; leaving a live
- * connection of the other type asks first and removes it
- * (DELETE /api/whatsapp/config) before switching.
+ * Settings → WhatsApp. `enabled` is decided on the server
+ * (`shouldUseProviderPanel`): when false — a Meta-only deployment with no
+ * stranded UAZAPI row — this is exactly today's Meta form, with no extra
+ * request, loader or selector.
  */
-export function WhatsAppProviderPanel() {
+export function WhatsAppProviderPanel({ enabled }: { enabled: boolean }) {
+  if (!enabled) return <WhatsAppConfig />;
+  return <ProviderSelectorPanel />;
+}
+
+/**
+ * Connection-type selector that swaps between the Meta form and the
+ * QR-code connection; leaving a live connection of the other type asks
+ * first and removes it (DELETE /api/whatsapp/config) before switching.
+ */
+function ProviderSelectorPanel() {
   const t = useTranslations('Settings.whatsapp');
   const tp = useTranslations('Settings.whatsapp.provider');
   const tu = useTranslations('Settings.whatsapp.uazapi');
@@ -88,6 +97,8 @@ export function WhatsAppProviderPanel() {
     null
   );
   const [switching, setSwitching] = useState(false);
+  // Re-reading the saved config before deciding on a switch.
+  const [checking, setChecking] = useState(false);
   // Remounts the child after its config was deleted under it.
   const [childKey, setChildKey] = useState(0);
 
@@ -130,13 +141,23 @@ export function WhatsAppProviderPanel() {
     (info.availableProviders.includes('uazapi') || info.provider === 'uazapi');
   if (!offersUazapi) return <WhatsAppConfig />;
 
-  const requestSwitch = (target: WhatsAppProvider) => {
-    if (target === selected) return;
-    if (switchNeedsDisconnect(info, target)) {
-      setPendingSwitch(target);
-    } else {
-      setSelected(target);
-    }
+  const requestSwitch = async (target: WhatsAppProvider) => {
+    if (target === selected || checking) return;
+    // The Meta form may have saved (or removed) a connection since this
+    // panel loaded; decide on what is saved now. On a failed re-fetch the
+    // cached snapshot decides.
+    setChecking(true);
+    const fresh = await fetchConfigInfo();
+    setChecking(false);
+    if (fresh) setInfo(fresh);
+    const decision = decideProviderSwitch({
+      selected,
+      target,
+      cached: info,
+      fresh,
+    });
+    if (decision === 'confirm') setPendingSwitch(target);
+    else if (decision === 'switch') setSelected(target);
   };
 
   const confirmSwitch = async () => {
@@ -199,8 +220,9 @@ export function WhatsAppProviderPanel() {
         <RadioGroup
           aria-labelledby="whatsapp-provider-label"
           value={selected}
-          onValueChange={(v) => requestSwitch(v as WhatsAppProvider)}
-          disabled={!canEditSettings || switching}
+          onValueChange={(v) => void requestSwitch(v as WhatsAppProvider)}
+          disabled={!canEditSettings || switching || checking}
+          aria-busy={checking}
           className="grid gap-2 sm:grid-cols-2"
         >
           {options.map((o) => (
@@ -211,7 +233,7 @@ export function WhatsAppProviderPanel() {
                 selected === o.value
                   ? 'border-primary-soft-2 bg-primary-soft'
                   : 'border-border hover:bg-card-2',
-                (!canEditSettings || switching) &&
+                (!canEditSettings || switching || checking) &&
                   'cursor-not-allowed opacity-70'
               )}
             >
@@ -240,6 +262,7 @@ export function WhatsAppProviderPanel() {
           <UazapiConnection
             key={`uazapi-${childKey}`}
             initial={uazapiInitial}
+            canCreate={info.availableProviders.includes('uazapi')}
             onChanged={refresh}
           />
         </section>
