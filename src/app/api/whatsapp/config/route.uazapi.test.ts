@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   role: 'admin' as string | null,
   configRow: null as Record<string, unknown> | null,
   insertError: null as { message: string } | null,
+  updateError: null as { message: string } | null,
   inserts: [] as Record<string, unknown>[],
   updates: [] as { payload: Record<string, unknown>; eqs: [string, unknown][] }[],
   deletes: [] as { eqs: [string, unknown][] }[],
@@ -46,8 +47,8 @@ function builder(table: string) {
           return { data: null, error: h.insertError }
         }
         if (op === 'update') {
-          h.updates.push({ payload, eqs })
-          return { data: null, error: null }
+          if (!h.updateError) h.updates.push({ payload, eqs })
+          return { data: null, error: h.updateError }
         }
         if (op === 'delete') {
           h.deletes.push({ eqs })
@@ -155,6 +156,7 @@ beforeEach(() => {
   h.role = 'admin'
   h.configRow = null
   h.insertError = null
+  h.updateError = null
   h.inserts.length = 0
   h.updates.length = 0
   h.deletes.length = 0
@@ -320,6 +322,66 @@ describe('POST /api/whatsapp/config — provider uazapi', () => {
     expectNoSecrets(json)
   })
 
+  it('deletes the new instance when the insert fails', async () => {
+    enableUazapi()
+    h.insertError = { message: 'duplicate key' }
+    const res = await postJson({ provider: 'uazapi' })
+    const json = await body(res)
+    expect(res.status).toBe(500)
+    expect(json.error).toBeTruthy()
+    expect(h.deleteInstance).toHaveBeenCalledTimes(1)
+    expect(h.deleteInstance).toHaveBeenCalledWith(INSTANCE_TOKEN)
+    expect(h.inserts).toHaveLength(0)
+    expectNoSecrets(json)
+  })
+
+  it('replaces a stale UAZAPI row, then deletes the OLD instance', async () => {
+    enableUazapi()
+    const OLD_TOKEN = 'old-inst-token-fedcba9876543210'
+    h.configRow = {
+      id: 'cfg-1',
+      provider: 'uazapi',
+      status: 'disconnected',
+      access_token: encrypt(OLD_TOKEN),
+    }
+    const order: string[] = []
+    h.deleteInstance.mockImplementation(async (t: string) => {
+      order.push(`delete:${t}:updates=${h.updates.length}`)
+    })
+    const res = await postJson({ provider: 'uazapi' })
+    const json = await body(res)
+    expect(res.status).toBe(200)
+    expect(h.inserts).toHaveLength(0)
+    expect(h.updates).toHaveLength(1)
+    const written = String(h.updates[0].payload.access_token)
+    expect(written).not.toContain(INSTANCE_TOKEN)
+    expect(decrypt(written)).toBe(INSTANCE_TOKEN)
+    // Only the old instance is removed, and only after the write succeeded.
+    expect(h.deleteInstance).toHaveBeenCalledTimes(1)
+    expect(h.deleteInstance).toHaveBeenCalledWith(OLD_TOKEN)
+    expect(order).toEqual([`delete:${OLD_TOKEN}:updates=1`])
+    expectNoSecrets(json, [OLD_TOKEN])
+  })
+
+  it('keeps the old instance and removes the new one when the replacement write fails', async () => {
+    enableUazapi()
+    const OLD_TOKEN = 'old-inst-token-fedcba9876543210'
+    h.configRow = {
+      id: 'cfg-1',
+      provider: 'uazapi',
+      status: 'disconnected',
+      access_token: encrypt(OLD_TOKEN),
+    }
+    h.updateError = { message: 'boom' }
+    const res = await postJson({ provider: 'uazapi' })
+    const json = await body(res)
+    expect(res.status).toBe(500)
+    expect(h.deleteInstance).toHaveBeenCalledTimes(1)
+    expect(h.deleteInstance).toHaveBeenCalledWith(INSTANCE_TOKEN)
+    expect(h.deleteInstance).not.toHaveBeenCalledWith(OLD_TOKEN)
+    expectNoSecrets(json, [OLD_TOKEN])
+  })
+
   it('maps a vendor 429 on create to 429 with Retry-After', async () => {
     enableUazapi()
     h.createInstance.mockRejectedValue(new UazapiError('rate limited', 429, 7))
@@ -351,6 +413,26 @@ describe('POST /api/whatsapp/config — provider uazapi', () => {
     const res = await postJson({ provider: 'uazapi' })
     expect(res.status).toBe(403)
     expect(h.createInstance).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /api/whatsapp/config — Meta save over a UAZAPI row', () => {
+  it('400s before any Meta call or write', async () => {
+    h.configRow = {
+      id: 'cfg-1',
+      provider: 'uazapi',
+      status: 'connected',
+      access_token: encrypt(INSTANCE_TOKEN),
+    }
+    const res = await postJson({ phone_number_id: '123', access_token: 'meta-token' })
+    const json = await body(res)
+    expect(res.status).toBe(400)
+    expect(String(json.error)).toMatch(/disconnect/i)
+    expect(h.verifyPhoneNumber).not.toHaveBeenCalled()
+    expect(h.inserts).toHaveLength(0)
+    expect(h.updates).toHaveLength(0)
+    expect(h.deleteInstance).not.toHaveBeenCalled()
+    expectNoSecrets(json)
   })
 })
 

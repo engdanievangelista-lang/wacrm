@@ -521,6 +521,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unknown WhatsApp provider' }, { status: 400 })
     }
 
+    // Saving Meta credentials over a UAZAPI row would leave it marked
+    // 'uazapi' with a Meta token and orphan the remote instance (its token
+    // overwritten). Refuse before any Meta call; Meta-only rows pass through.
+    const { data: currentProvider } = await supabase
+      .from('whatsapp_config')
+      .select('provider')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    if (currentProvider?.provider === 'uazapi') {
+      return NextResponse.json(
+        {
+          error:
+            'Disconnect the current WhatsApp (QR) connection before saving Meta credentials.',
+        },
+        { status: 400 },
+      )
+    }
+
     const { phone_number_id, waba_id, access_token, verify_token, pin } = body
 
     if (!access_token || !phone_number_id) {
