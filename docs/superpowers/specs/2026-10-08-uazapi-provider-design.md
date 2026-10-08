@@ -57,7 +57,7 @@ interface WhatsAppProvider {
   sendText({ to, text, replyToMessageId? }): { messageId }
   sendMedia({ to, kind, url, caption?, filename?, replyToMessageId? }): { messageId }
   sendReaction({ to, messageId, emoji }): void
-  supports: { templates: boolean; interactive: boolean; broadcast: boolean }
+  supports: { templates: boolean; interactive: boolean; broadcast: boolean; automations: boolean }
 }
 getProvider(config): WhatsAppProvider   // reads config.provider, decrypts token
 ```
