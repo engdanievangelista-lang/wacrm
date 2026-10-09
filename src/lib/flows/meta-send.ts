@@ -15,6 +15,7 @@ import {
 } from '@/lib/whatsapp/phone-utils'
 import { resolveContactSendTarget } from '@/lib/whatsapp/wa-identity'
 import { assertConversationInAccount } from '@/lib/whatsapp/conversation-scope'
+import { assertSupports } from '@/lib/whatsapp/providers'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -44,12 +45,15 @@ export async function loadAccountMetaCredentials(
 ): Promise<{ phoneNumberId: string; accessToken: string }> {
   const { data: config, error: configErr } = await db
     .from('whatsapp_config')
-    .select('phone_number_id, access_token')
+    .select('provider, phone_number_id, access_token')
     .eq('account_id', accountId)
     .single()
   if (configErr || !config) {
     throw new Error('WhatsApp not configured for this account')
   }
+  // Flows, the AI auto-reply and interactive sends all speak the Meta API;
+  // fail loudly instead of sending a UAZAPI token to Meta.
+  assertSupports(config, 'automations')
   return {
     phoneNumberId: config.phone_number_id,
     accessToken: decrypt(config.access_token),

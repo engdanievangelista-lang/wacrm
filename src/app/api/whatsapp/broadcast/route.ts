@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { providerGuardResponse } from '@/lib/whatsapp/providers/guards'
 import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body'
 import {
@@ -135,6 +136,9 @@ export async function POST(request: Request) {
         { status: 400 }
       )
     }
+
+    const blocked = providerGuardResponse(config, 'broadcast')
+    if (blocked) return blocked
 
     const accessToken = decrypt(config.access_token)
 

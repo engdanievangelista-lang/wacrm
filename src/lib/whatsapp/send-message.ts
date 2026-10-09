@@ -22,9 +22,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import {
-  sendTextMessage,
   sendTemplateMessage,
-  sendMediaMessage,
   sendInteractiveButtons,
   sendInteractiveList,
   type MediaKind,
@@ -34,6 +32,13 @@ import {
   interactivePayloadPreviewText,
   type InteractiveMessagePayload,
 } from '@/lib/whatsapp/interactive';
+import {
+  getProvider,
+  assertSupports,
+  UnsupportedByProviderError,
+  type WhatsAppProvider,
+} from '@/lib/whatsapp/providers';
+import type { WhatsAppConfig } from '@/types';
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import {
@@ -118,8 +123,13 @@ export function validateSendMessageParams(params: {
   templateName?: string | null;
   interactivePayload?: InteractiveMessagePayload | null;
 }): void {
-  const { messageType, contentText, mediaUrl, templateName, interactivePayload } =
-    params;
+  const {
+    messageType,
+    contentText,
+    mediaUrl,
+    templateName,
+    interactivePayload,
+  } = params;
 
   if (!messageType) {
     throw new SendMessageError('bad_request', 'message_type is required', 400);
@@ -269,22 +279,56 @@ export async function sendMessageToConversation(
     );
   }
 
-  const accessToken = decrypt(config.access_token);
+  // Rows predating the provider column (and bare mocks) are Meta.
+  const providerConfig = {
+    ...config,
+    provider: config.provider ?? 'meta',
+  } as WhatsAppConfig;
 
-  // Self-heal legacy CBC ciphertexts. Fire-and-forget; idempotent.
-  if (isLegacyFormat(config.access_token)) {
-    void db
-      .from('whatsapp_config')
-      .update({ access_token: encrypt(accessToken) })
-      .eq('id', config.id)
-      .then(({ error }: { error: { message: string } | null }) => {
-        if (error) {
-          console.warn(
-            '[send-message] access_token GCM upgrade failed:',
-            error.message
-          );
-        }
-      });
+  // Template / interactive are Meta-only features — reject early for
+  // any provider that doesn't support them.
+  if (messageType === 'template' || messageType === 'interactive') {
+    try {
+      assertSupports(
+        providerConfig,
+        messageType === 'template' ? 'templates' : 'interactive'
+      );
+    } catch (err) {
+      if (err instanceof UnsupportedByProviderError) {
+        throw new SendMessageError(
+          'unsupported_by_provider',
+          `${
+            messageType === 'template' ? 'Template' : 'Interactive'
+          } messages are not supported by the "${err.provider}" WhatsApp provider.`,
+          400
+        );
+      }
+      throw err;
+    }
+  }
+
+  // Only Meta needs the token here (template/interactive branches and the
+  // legacy self-heal). Other providers decrypt inside getProvider, within
+  // the send try/catch, so a bad token maps to provider_error.
+  let accessToken = '';
+  if (providerConfig.provider === 'meta') {
+    accessToken = decrypt(config.access_token);
+
+    // Self-heal legacy CBC ciphertexts. Fire-and-forget; idempotent.
+    if (isLegacyFormat(config.access_token)) {
+      void db
+        .from('whatsapp_config')
+        .update({ access_token: encrypt(accessToken) })
+        .eq('id', config.id)
+        .then(({ error }: { error: { message: string } | null }) => {
+          if (error) {
+            console.warn(
+              '[send-message] access_token GCM upgrade failed:',
+              error.message
+            );
+          }
+        });
+    }
   }
 
   // Resolve the reply target to its Meta message_id. The parent must
@@ -339,6 +383,12 @@ export async function sendMessageToConversation(
     sendLanguage = resolved.language;
   }
 
+  // Text/media go through the provider (created lazily; template and
+  // interactive stay direct Meta calls, reachable only for Meta).
+  let provider: WhatsAppProvider | null = null;
+  const getSendProvider = (): WhatsAppProvider =>
+    (provider ??= getProvider(providerConfig));
+
   const attempt = async (phone: string): Promise<string> => {
     if (messageType === 'template') {
       const result = await sendTemplateMessage({
@@ -355,15 +405,13 @@ export async function sendMessageToConversation(
       return result.messageId;
     }
     if (isMediaKind) {
-      const result = await sendMediaMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+      const result = await getSendProvider().sendMedia({
         to: phone,
         kind: messageType as MediaKind,
-        link: mediaUrl!,
+        url: mediaUrl!,
         caption: contentText || undefined,
         filename: filename || undefined,
-        contextMessageId,
+        replyToMessageId: contextMessageId,
       });
       return result.messageId;
     }
@@ -395,12 +443,10 @@ export async function sendMessageToConversation(
       });
       return result.messageId;
     }
-    const result = await sendTextMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+    const result = await getSendProvider().sendText({
       to: phone,
       text: contentText!,
-      contextMessageId,
+      replyToMessageId: contextMessageId,
     });
     return result.messageId;
   };
@@ -413,7 +459,9 @@ export async function sendMessageToConversation(
   try {
     // Variants only make sense for a phone number — a BSUID is opaque
     // and has exactly one correct form, so it gets a single attempt.
-    const variants = hasValidPhone ? phoneVariants(sanitizedPhone) : [sendTarget];
+    const variants = hasValidPhone
+      ? phoneVariants(sanitizedPhone)
+      : [sendTarget];
     let lastError: unknown = null;
 
     for (const variant of variants) {
@@ -438,8 +486,23 @@ export async function sendMessageToConversation(
   } catch (err) {
     const message =
       err instanceof Error ? err.message : 'Unknown Meta API error';
-    console.error('[send-message] Meta send failed for all variants:', message);
-    throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
+    if (providerConfig.provider === 'meta') {
+      console.error(
+        '[send-message] Meta send failed for all variants:',
+        message
+      );
+      throw new SendMessageError(
+        'meta_error',
+        `Meta API error: ${message}`,
+        502
+      );
+    }
+    console.error('[send-message] provider send failed:', message);
+    throw new SendMessageError(
+      'provider_error',
+      `WhatsApp provider error: ${message}`,
+      502
+    );
   }
 
   if (hasValidPhone && workingPhone !== sanitizedPhone) {

@@ -163,6 +163,9 @@ Key pages:
   trace id to quote to Meta support
 - [Several WABAs on one deployment](./docs/multi-waba.md) — one Meta
   App or several; how `META_APP_SECRET` takes a comma-separated list
+- [UAZAPI provider](./docs/uazapi-provider.md) — optional unofficial
+  QR-code WhatsApp connection instead of the Meta Cloud API: setup,
+  limits and ban risk
 - [Auth emails](./docs/auth-emails.md) — what Supabase must allow so
   confirmation and password-reset links come back to *your* domain
   instead of `localhost:3000`, and how `/auth/callback` handles them
@@ -171,7 +174,8 @@ Key pages:
 
 - **App** — Next.js 16 (App Router), React 19, TypeScript, Tailwind v4.
 - **Data** — Supabase (Postgres + Auth + Storage + RLS).
-- **WhatsApp** — Meta Cloud API (official WhatsApp Business API).
+- **WhatsApp** — Meta Cloud API (official WhatsApp Business API), or
+  optionally UAZAPI (unofficial, QR code).
 
 ## Contributing
 

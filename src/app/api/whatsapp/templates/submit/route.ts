@@ -7,6 +7,7 @@ import {
   toErrorResponse,
 } from '@/lib/auth/account'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { providerGuardResponse } from '@/lib/whatsapp/providers/guards'
 import { submitMessageTemplate } from '@/lib/whatsapp/meta-api'
 import {
   validateTemplatePayload,
@@ -152,6 +153,8 @@ export async function POST(request: Request) {
           { status: 400 },
         )
       }
+      const blocked = providerGuardResponse(config, 'templates')
+      if (blocked) return blocked
       if (!config.waba_id) {
         return NextResponse.json(
           {

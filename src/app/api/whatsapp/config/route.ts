@@ -22,6 +22,11 @@ import {
 } from '@/lib/whatsapp/waba-pairing'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 import { resolveVerifyTokenForSave } from '@/lib/whatsapp/verify-token'
+import { randomBytes } from 'node:crypto'
+import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { isUazapiEnabled, UazapiError } from '@/lib/whatsapp/uazapi/client'
+import { configureWebhook, createInstance, deleteInstance } from '@/lib/whatsapp/uazapi/instance'
+import { uazapiFailure } from '@/lib/whatsapp/uazapi/route-helpers'
 
 /**
  * Resolve the caller's account_id from their profile. Inlined here
@@ -81,6 +86,204 @@ function metaFailure(err: unknown, step: MetaConnectStep, ctx: MetaErrorContext)
   )
 }
 
+type ProviderId = 'meta' | 'uazapi'
+
+/** Providers this deployment can offer. UAZAPI only when its env is set. */
+function listAvailableProviders(): ProviderId[] {
+  return isUazapiEnabled() ? ['meta', 'uazapi'] : ['meta']
+}
+
+/**
+ * Public base URL UAZAPI should call back. Same resolution order as the
+ * invite links (src/app/api/account/invitations/route.ts): explicit
+ * `NEXT_PUBLIC_SITE_URL`, then the proxy's X-Forwarded-Host/-Proto, then
+ * the Host header with the request's protocol — each request-derived host
+ * checked against `ALLOWED_INVITE_HOSTS` when that list is set. Unlike
+ * invites there is no marketing-site fallback: a webhook pointed anywhere
+ * else would silently drop every message, so null is returned instead.
+ */
+function publicBaseUrl(request: Request): string | null {
+  const explicit = process.env.NEXT_PUBLIC_SITE_URL?.trim()
+  if (explicit) return explicit.replace(/\/+$/, '')
+
+  const allowRaw = process.env.ALLOWED_INVITE_HOSTS?.trim()
+  const allowList = allowRaw
+    ? allowRaw.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)
+    : []
+  const allowed = (host: string) =>
+    allowList.length === 0 || allowList.includes(host.toLowerCase())
+
+  const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim()
+  const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim()
+  if (forwardedHost && allowed(forwardedHost)) {
+    return `${forwardedProto || 'https'}://${forwardedHost}`
+  }
+
+  const host = request.headers.get('host')?.trim()
+  if (host && allowed(host)) {
+    const proto = new URL(request.url).protocol.replace(':', '')
+    return `${proto}://${host}`
+  }
+  return null
+}
+
+/** Best-effort UAZAPI instance removal. Never throws; never logs the token. */
+async function deleteInstanceQuietly(token: string, step: string): Promise<void> {
+  try {
+    await deleteInstance(token)
+  } catch (err) {
+    console.warn(
+      `[whatsapp/config] UAZAPI instance delete failed (${step}):`,
+      err instanceof UazapiError ? err.message : err instanceof Error ? err.name : 'unknown error',
+    )
+  }
+}
+
+async function deleteUazapiInstanceQuietly(encryptedToken: string, step: string): Promise<void> {
+  let token: string
+  try {
+    token = decrypt(encryptedToken)
+  } catch {
+    console.warn(`[whatsapp/config] could not decrypt UAZAPI instance token (${step}); skipping remote delete`)
+    return
+  }
+  await deleteInstanceQuietly(token, step)
+}
+
+/**
+ * POST /api/whatsapp/config with `{ provider: 'uazapi' }`.
+ *
+ * Creates a UAZAPI instance for the caller's account, points its webhook at
+ * `/api/whatsapp/uazapi/webhook/<secret>` and stores the row as
+ * 'connecting'. The QR is fetched afterwards via the uazapi connect/status
+ * routes. Answers `{ success, provider, status }` — never a token or secret.
+ */
+async function createUazapiConfig(request: Request): Promise<NextResponse> {
+  // whatsapp_config writes are admin-only under RLS; the vendor calls below
+  // happen before any write, so the gate must be explicit here.
+  let ctx: Awaited<ReturnType<typeof requireRole>>
+  try {
+    ctx = await requireRole('admin')
+  } catch (err) {
+    return toErrorResponse(err)
+  }
+  const { supabase, accountId, userId } = ctx
+
+  if (!isUazapiEnabled()) {
+    return NextResponse.json(
+      {
+        error:
+          'UAZAPI is not enabled on this server. Set UAZAPI_URL and UAZAPI_ADMIN_TOKEN to use QR-code connections.',
+      },
+      { status: 400 },
+    )
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from('whatsapp_config')
+    .select('id, provider, status, access_token')
+    .eq('account_id', accountId)
+    .maybeSingle()
+
+  if (existingError) {
+    console.error('Error fetching whatsapp_config:', existingError)
+    return NextResponse.json({ error: 'Failed to fetch configuration' }, { status: 500 })
+  }
+
+  if (existing && (existing.status === 'connected' || existing.status === 'connecting')) {
+    return NextResponse.json(
+      {
+        error:
+          'This account already has a WhatsApp connection. Disconnect it before connecting a new one.',
+      },
+      { status: 400 },
+    )
+  }
+
+  const baseUrl = publicBaseUrl(request)
+  if (!baseUrl) {
+    return NextResponse.json(
+      {
+        error:
+          "Could not determine this app's public URL for the WhatsApp webhook. Set NEXT_PUBLIC_SITE_URL and try again.",
+      },
+      { status: 500 },
+    )
+  }
+
+  // Deterministic and non-secret: account ids are not credentials.
+  let created: { instanceId: string; token: string }
+  try {
+    created = await createInstance(`wacrm-${accountId}`)
+  } catch (err) {
+    return uazapiFailure(err, 'create-instance')
+  }
+
+  const webhookSecret = randomBytes(32).toString('hex')
+  try {
+    await configureWebhook(
+      created.token,
+      `${baseUrl}/api/whatsapp/uazapi/webhook/${webhookSecret}`,
+    )
+  } catch (err) {
+    await deleteInstanceQuietly(created.token, 'configure-webhook rollback')
+    return uazapiFailure(err, 'configure-webhook')
+  }
+
+  let encryptedToken: string
+  try {
+    encryptedToken = encrypt(created.token)
+  } catch (err) {
+    console.error('Encryption failed:', err instanceof Error ? err.message : 'Unknown encryption error')
+    await deleteInstanceQuietly(created.token, 'encrypt rollback')
+    return NextResponse.json(
+      {
+        error:
+          'Failed to encrypt token. Check that ENCRYPTION_KEY is a valid 64-character hex string in your environment variables.',
+      },
+      { status: 500 },
+    )
+  }
+
+  const now = new Date().toISOString()
+  const baseRow = {
+    provider: 'uazapi',
+    provider_config: { instance_id: created.instanceId },
+    webhook_secret: webhookSecret,
+    access_token: encryptedToken,
+    phone_number_id: null,
+    waba_id: null,
+    verify_token: null,
+    status: 'connecting',
+    connected_at: null,
+    registered_at: null,
+    subscribed_apps_at: null,
+    last_registration_error: null,
+    updated_at: now,
+  }
+
+  // A stale (disconnected) row of either provider is replaced in place so
+  // the account's other per-config settings survive the switch.
+  const { error: writeError } = existing
+    ? await supabase.from('whatsapp_config').update(baseRow).eq('account_id', accountId)
+    : await supabase
+        .from('whatsapp_config')
+        .insert({ account_id: accountId, user_id: userId, ...baseRow })
+
+  if (writeError) {
+    console.error('Error saving UAZAPI whatsapp_config:', writeError.message ?? 'unknown error')
+    await deleteInstanceQuietly(created.token, 'save rollback')
+    return NextResponse.json({ error: 'Failed to save configuration' }, { status: 500 })
+  }
+
+  // The replaced row may still own a live instance on the UAZAPI server.
+  if (existing?.provider === 'uazapi' && existing.access_token) {
+    await deleteUazapiInstanceQuietly(existing.access_token, 'replace')
+  }
+
+  return NextResponse.json({ success: true, provider: 'uazapi', status: 'connecting' })
+}
+
 /**
  * GET /api/whatsapp/config
  *
@@ -95,6 +298,12 @@ function metaFailure(err: unknown, step: MetaConnectStep, ctx: MetaErrorContext)
  *   { connected: false, reason: 'token_corrupted',  message: '...', needs_reset: true }
  *   { connected: false, reason: 'meta_api_error',   message: '...',
  *     meta: { code, subcode, fbtrace_id, step, field, message } }
+ *   UAZAPI row:
+ *   { connected, provider: 'uazapi', status, phone, profileName }
+ *
+ * Every non-auth response also carries `provider` ('meta' | 'uazapi' |
+ * null when nothing is saved) and `availableProviders` ('uazapi' only when
+ * the server has UAZAPI configured).
  */
 export async function GET() {
   try {
@@ -109,6 +318,8 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const availableProviders = listAvailableProviders()
+
     const accountId = await resolveAccountId(supabase, user.id)
     if (!accountId) {
       return NextResponse.json(
@@ -116,6 +327,8 @@ export async function GET() {
           connected: false,
           reason: 'no_account',
           message: 'Your profile is not linked to an account.',
+          provider: null,
+          availableProviders,
         },
         { status: 200 },
       )
@@ -123,14 +336,20 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, waba_id, access_token, status')
+      .select('phone_number_id, waba_id, access_token, status, provider, provider_config')
       .eq('account_id', accountId)
       .maybeSingle()
 
     if (configError) {
       console.error('Error fetching whatsapp_config:', configError)
       return NextResponse.json(
-        { connected: false, reason: 'db_error', message: 'Failed to fetch configuration' },
+        {
+          connected: false,
+          reason: 'db_error',
+          message: 'Failed to fetch configuration',
+          provider: null,
+          availableProviders,
+        },
         { status: 200 }
       )
     }
@@ -141,9 +360,28 @@ export async function GET() {
           connected: false,
           reason: 'no_config',
           message: 'No WhatsApp configuration saved yet. Fill in the form and click Save Configuration.',
+          provider: null,
+          availableProviders,
         },
         { status: 200 }
       )
+    }
+
+    // UAZAPI rows: report the locally mirrored state only. Live state comes
+    // from GET /api/whatsapp/uazapi/status; no token or secret is returned.
+    if (config.provider === 'uazapi') {
+      const pc = (config.provider_config ?? {}) as {
+        phone?: string | null
+        profile_name?: string | null
+      }
+      return NextResponse.json({
+        connected: config.status === 'connected',
+        provider: 'uazapi',
+        availableProviders,
+        status: config.status,
+        phone: pc.phone ?? null,
+        profileName: pc.profile_name ?? null,
+      })
     }
 
     // Try to decrypt the stored token with the current ENCRYPTION_KEY.
@@ -157,6 +395,8 @@ export async function GET() {
         {
           connected: false,
           reason: 'token_corrupted',
+          provider: 'meta',
+          availableProviders,
           needs_reset: true,
           message:
             'The stored access token cannot be decrypted with the current ENCRYPTION_KEY. This usually means the key changed, or it differs between environments (local vs Hostinger vs Vercel). Click "Reset Configuration" below, then re-save.',
@@ -184,6 +424,8 @@ export async function GET() {
           reason: 'meta_api_error',
           message: explained.summary,
           meta: metaErrorPayload(explained),
+          provider: 'meta',
+          availableProviders,
         },
         { status: 200 }
       )
@@ -224,6 +466,8 @@ export async function GET() {
       connected: true,
       phone_info: phoneInfo,
       waba_subscription: wabaSubscription,
+      provider: 'meta',
+      availableProviders,
     })
   } catch (error) {
     console.error('Error in WhatsApp config GET:', error)
@@ -267,6 +511,34 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
+
+    // Provider switch. No `provider` (or 'meta') keeps the Meta flow below
+    // exactly as it was.
+    if (body?.provider !== undefined && body?.provider !== 'meta') {
+      if (body.provider === 'uazapi') {
+        return await createUazapiConfig(request)
+      }
+      return NextResponse.json({ error: 'Unknown WhatsApp provider' }, { status: 400 })
+    }
+
+    // Saving Meta credentials over a UAZAPI row would leave it marked
+    // 'uazapi' with a Meta token and orphan the remote instance (its token
+    // overwritten). Refuse before any Meta call; Meta-only rows pass through.
+    const { data: currentProvider } = await supabase
+      .from('whatsapp_config')
+      .select('provider')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    if (currentProvider?.provider === 'uazapi') {
+      return NextResponse.json(
+        {
+          error:
+            'Disconnect the current WhatsApp (QR) connection before saving Meta credentials.',
+        },
+        { status: 400 },
+      )
+    }
+
     const { phone_number_id, waba_id, access_token, verify_token, pin } = body
 
     if (!access_token || !phone_number_id) {
@@ -606,6 +878,24 @@ export async function DELETE() {
         { error: 'Your profile is not linked to an account.' },
         { status: 403 },
       )
+    }
+
+    // A UAZAPI row owns a remote instance: remove it too (best effort).
+    const { data: current } = await supabase
+      .from('whatsapp_config')
+      .select('provider, access_token')
+      .eq('account_id', accountId)
+      .maybeSingle()
+
+    if (current?.provider === 'uazapi') {
+      // Deleting the remote instance is irreversible and happens outside
+      // RLS, so enforce the admin gate (RLS: settings-class) up front.
+      try {
+        await requireRole('admin')
+      } catch (err) {
+        return toErrorResponse(err)
+      }
+      await deleteUazapiInstanceQuietly(current.access_token, 'delete')
     }
 
     const { error: deleteError } = await supabase

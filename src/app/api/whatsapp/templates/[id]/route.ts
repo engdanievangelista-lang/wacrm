@@ -6,6 +6,7 @@ import {
   toErrorResponse,
 } from '@/lib/auth/account'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { providerGuardResponse } from '@/lib/whatsapp/providers/guards'
 import {
   deleteMessageTemplate,
   editMessageTemplate,
@@ -140,6 +141,8 @@ export async function PATCH(
           { status: 400 },
         )
       }
+      const blocked = providerGuardResponse(config, 'templates')
+      if (blocked) return blocked
       const accessToken = decrypt(config.access_token)
 
       // Media headers (image/video/document) need a fresh Resumable-Upload
@@ -259,6 +262,10 @@ export async function DELETE(
         .select('*')
         .eq('account_id', accountId)
         .single()
+      if (config) {
+        const blocked = providerGuardResponse(config, 'templates')
+        if (blocked) return blocked
+      }
       if (configError || !config || !config.waba_id) {
         return NextResponse.json(
           { error: 'WhatsApp not configured — cannot delete on Meta.' },

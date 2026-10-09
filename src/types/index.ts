@@ -291,14 +291,26 @@ export interface MessageReaction {
   created_at: string;
 }
 
+export type UazapiProviderConfig = {
+  instance_id: string;
+  phone?: string;
+  profile_name?: string;
+};
+
 export interface WhatsAppConfig {
   id: string;
   user_id: string;
-  phone_number_id: string;
-  waba_id?: string;
+  /** Which WhatsApp backend this config drives. Migration 043. */
+  provider: 'meta' | 'uazapi';
+  provider_config: UazapiProviderConfig | null;
+  /** Per-config webhook secret (UAZAPI). Migration 043. */
+  webhook_secret: string | null;
+  /** Required for provider='meta'; null for UAZAPI. */
+  phone_number_id: string | null;
+  waba_id?: string | null;
   access_token: string;
   verify_token?: string;
-  status: 'connected' | 'disconnected';
+  status: 'connected' | 'connecting' | 'disconnected';
   connected_at?: string;
   /**
    * Set when POST /{phone_number_id}/register last succeeded. NULL

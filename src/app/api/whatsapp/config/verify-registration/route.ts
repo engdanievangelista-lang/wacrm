@@ -69,6 +69,17 @@ export async function GET() {
     })
   }
 
+  // This diagnostic is Meta-specific. A UAZAPI row has no phone_number_id /
+  // waba_id and its token must never be sent to graph.facebook.com. Treat a
+  // missing provider as 'meta' (legacy rows), like send-message.ts does.
+  if ((config.provider ?? 'meta') !== 'meta') {
+    return NextResponse.json({
+      live: false,
+      checks: { config_exists: true },
+      message: 'Not applicable to this provider.',
+    })
+  }
+
   let accessToken: string
   try {
     accessToken = decrypt(config.access_token)
