@@ -33,7 +33,9 @@ and polish.
 
   `UAZAPI_URL` must be `https://` without credentials, query or fragment
   (`http://` only outside production); an invalid value disables UAZAPI
-  and logs a warning.
+  and logs a warning. Settings → WhatsApp also re-checks a saved
+  "connected" UAZAPI status against the server once when it loads, so an
+  unlinked phone or a deleted instance no longer shows as connected.
 
 > **Migration required:** apply `supabase/migrations/043_whatsapp_provider.sql`
 > (adds `provider`, `provider_config` and `webhook_secret` to

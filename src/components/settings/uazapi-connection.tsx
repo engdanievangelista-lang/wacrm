@@ -152,6 +152,40 @@ export function UazapiConnection({
     if (canEditSettings) dispatch({ type: 'retry_now' });
   }, [canEditSettings]);
 
+  // ---- one-off check of a saved "connected" row -------------------------
+  // The mirrored row can be stale (phone unlinked, instance deleted), so a
+  // panel opened on "connected" asks UAZAPI once. Nothing changes on screen
+  // unless the answer says the link is gone. Pending until it has an answer,
+  // so a remount (or the role resolving late) simply retries.
+  const verifyPending = useRef(state.phase === 'connected');
+  useEffect(() => {
+    if (!canEditSettings || !verifyPending.current) return;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const r = await call('/api/whatsapp/uazapi/status', {
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        verifyPending.current = false;
+        if (r.ok && r.body) {
+          dispatch({
+            type: 'verify_ok',
+            state: remoteState(r.body.state),
+            phone: str(r.body.phone),
+            profileName: str(r.body.profileName),
+            now: Date.now(),
+          });
+        } else {
+          dispatch({ type: 'verify_error', status: r.status });
+        }
+      } catch (err) {
+        if (!isAbort(err)) throw err;
+      }
+    })();
+    return () => controller.abort();
+  }, [canEditSettings]);
+
   // ---- status polling -------------------------------------------------
   const { shouldPoll, nextPollMs, pollSeq } = state;
   useEffect(() => {

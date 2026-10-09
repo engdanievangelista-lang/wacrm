@@ -606,3 +606,94 @@ describe('shouldUseProviderPanel', () => {
     ).toBe(true);
   });
 });
+
+describe('verify on load (saved "connected" row)', () => {
+  const connected = () =>
+    initialUazapiState({
+      status: 'connected',
+      phone: '5511999990000',
+      profileName: 'Shop',
+    });
+  const ok = (
+    state: 'connected' | 'connecting' | 'disconnected' | 'hibernated',
+    extra: { phone?: string | null; profileName?: string | null } = {}
+  ) =>
+    ({
+      type: 'verify_ok',
+      state,
+      phone: null,
+      profileName: null,
+      now: T0,
+      ...extra,
+    }) as const;
+
+  it('keeps "connected" without polling when the server agrees', () => {
+    const s = uazapiReducer(connected(), ok('connected'));
+    expect(s.phase).toBe('connected');
+    expect(s.phone).toBe('5511999990000');
+    expect(s.shouldPoll).toBe(false);
+    expect(s.error).toBeNull();
+  });
+
+  it('takes fresher phone and profile from the server', () => {
+    const s = uazapiReducer(
+      connected(),
+      ok('connected', { phone: '5511888880000', profileName: 'New' })
+    );
+    expect(s.phone).toBe('5511888880000');
+    expect(s.profileName).toBe('New');
+  });
+
+  it('drops to idle when the phone was unlinked', () => {
+    const s = uazapiReducer(connected(), ok('disconnected'));
+    expect(s.phase).toBe('idle');
+    expect(s.error).toBeNull();
+    expect(s.shouldPoll).toBe(false);
+  });
+
+  it('drops to idle with the hibernation notice', () => {
+    const s = uazapiReducer(connected(), ok('hibernated'));
+    expect(s.phase).toBe('idle');
+    expect(s.error).toBe('hibernated');
+  });
+
+  it('resumes pairing when the server is waiting for a scan', () => {
+    const s = uazapiReducer(connected(), ok('connecting'));
+    expect(s.phase).toBe('waiting_qr');
+    expect(s.shouldPoll).toBe(true);
+    expect(s.nextPollMs).toBe(0);
+    expect(s.qr).toBeNull();
+  });
+
+  it('409 means the instance is gone', () => {
+    const s = uazapiReducer(connected(), { type: 'verify_error', status: 409 });
+    expect(s.phase).toBe('idle');
+    expect(s.error).toBe('instance_gone');
+  });
+
+  it('400 means the row was removed elsewhere', () => {
+    const s = uazapiReducer(connected(), { type: 'verify_error', status: 400 });
+    expect(s.phase).toBe('idle');
+    expect(s.error).toBeNull();
+  });
+
+  it.each([0, 401, 403, 429, 500, 503])(
+    'keeps "connected" quietly on %s',
+    (status) => {
+      const before = connected();
+      expect(uazapiReducer(before, { type: 'verify_error', status })).toBe(
+        before
+      );
+    }
+  );
+
+  it('ignores a late answer once the panel left "connected"', () => {
+    const idle = uazapiReducer(connected(), { type: 'reset' });
+    expect(uazapiReducer(idle, ok('connected'))).toBe(idle);
+    expect(uazapiReducer(idle, { type: 'verify_error', status: 409 })).toBe(
+      idle
+    );
+    const pairing = showingQr();
+    expect(uazapiReducer(pairing, ok('disconnected'))).toBe(pairing);
+  });
+});

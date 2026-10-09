@@ -85,6 +85,18 @@ export type UazapiEvent =
       retryAfterSec: number | null;
       now: number;
     }
+  /**
+   * One-off check of a saved "connected" row against UAZAPI when the panel
+   * loads. Ignored unless the panel is still showing "connected".
+   */
+  | {
+      type: 'verify_ok';
+      state: UazapiRemoteState;
+      phone: string | null;
+      profileName: string | null;
+      now: number;
+    }
+  | { type: 'verify_error'; status: number }
   /** Unmount or disconnect in progress: stop polling, ignore late answers. */
   | { type: 'stop' }
   /** After the connection was removed. */
@@ -243,6 +255,43 @@ export function uazapiReducer(s: UazapiUiState, e: UazapiEvent): UazapiUiState {
       }
       // Anything else: the status route is the authoritative QR source.
       return applyConnecting(s, e.qr, e.now);
+
+    case 'verify_ok': {
+      if (s.phase !== 'connected' || s.shouldPoll) return s;
+      if (e.state === 'connected') {
+        return {
+          ...s,
+          phone: e.phone ?? s.phone,
+          profileName: e.profileName ?? s.profileName,
+        };
+      }
+      if (e.state === 'connecting') {
+        // The phone was unlinked and a pairing is under way: resume it.
+        return schedule(
+          {
+            ...s,
+            phase: 'waiting_qr',
+            qr: null,
+            qrReceivedAt: null,
+            qrExpired: false,
+            startedAt: e.now,
+          },
+          0
+        );
+      }
+      return backToIdle(s, e.state === 'hibernated' ? 'hibernated' : null);
+    }
+
+    case 'verify_error': {
+      if (s.phase !== 'connected' || s.shouldPoll) return s;
+      // The instance is gone on the UAZAPI side.
+      if (e.status === 409) return backToIdle(s, 'instance_gone');
+      // The row was removed elsewhere.
+      if (e.status === 400) return backToIdle(s, null);
+      // 401/403, 429, 5xx, network: only an opportunistic check — keep what
+      // is on screen.
+      return s;
+    }
 
     case 'status_ok': {
       if (!s.shouldPoll) return s;
