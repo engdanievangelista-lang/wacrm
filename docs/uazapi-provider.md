@@ -50,6 +50,11 @@ already use in the WhatsApp app and can accept the risks above.
    UAZAPI_ADMIN_TOKEN=your-uazapi-admin-token
    ```
 
+   `UAZAPI_URL` must be an `https://` URL with no credentials, query or
+   fragment (`http://` is accepted only when `NODE_ENV` is not
+   `production`, e.g. a local UAZAPI during development). An invalid value
+   is ignored, a warning is logged and the UAZAPI option stays hidden.
+
    Your deployment owns the UAZAPI server: wacrm uses the admin token to
    create one instance per account when a user chooses UAZAPI. If either
    variable is unset, the UAZAPI option is not offered and a Meta-only

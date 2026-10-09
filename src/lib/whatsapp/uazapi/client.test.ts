@@ -29,6 +29,49 @@ describe('env', () => {
   })
 })
 
+describe('UAZAPI_URL validation', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('keeps a base path and drops trailing slashes', () => {
+    vi.stubEnv('UAZAPI_URL', 'https://host.example.com/uaz//')
+    expect(uazapiEnv()?.baseUrl).toBe('https://host.example.com/uaz')
+  })
+  it.each([
+    ['plain http in production', 'http://free.uazapi.com', 'production'],
+    ['non-http scheme', 'ftp://free.uazapi.com', 'development'],
+    ['embedded credentials', 'https://u:p@free.uazapi.com', 'production'],
+    ['a query string', 'https://free.uazapi.com/?a=1', 'production'],
+    ['a fragment', 'https://free.uazapi.com/#x', 'production'],
+    ['an unparseable value', 'not a url', 'production'],
+    ['a scheme-less host', 'free.uazapi.com', 'development'],
+  ])('rejects %s', (_label, url, nodeEnv) => {
+    vi.stubEnv('NODE_ENV', nodeEnv)
+    vi.stubEnv('UAZAPI_URL', url)
+    expect(uazapiEnv()).toBeNull()
+    expect(isUazapiEnabled()).toBe(false)
+  })
+  it('allows http outside production only', () => {
+    vi.stubEnv('UAZAPI_URL', 'http://localhost:8080')
+    vi.stubEnv('NODE_ENV', 'development')
+    expect(uazapiEnv()?.baseUrl).toBe('http://localhost:8080')
+    vi.stubEnv('NODE_ENV', 'production')
+    expect(uazapiEnv()).toBeNull()
+  })
+  it('never prints the rejected value', () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('UAZAPI_URL', 'https://user:secret@free.uazapi.com')
+    uazapiEnv()
+    for (const call of vi.mocked(console.warn).mock.calls) {
+      expect(String(call[0])).not.toContain('secret')
+    }
+  })
+})
+
 describe('uazapiRequest', () => {
   it('sends token header, method, JSON body and returns json', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: 1 }), { status: 200 }))

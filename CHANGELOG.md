@@ -31,6 +31,10 @@ and polish.
   way can be restricted or banned. It was tested against the vendor's
   OpenAPI spec with mocked HTTP, not yet against a live server.
 
+  `UAZAPI_URL` must be `https://` without credentials, query or fragment
+  (`http://` only outside production); an invalid value disables UAZAPI
+  and logs a warning.
+
 > **Migration required:** apply `supabase/migrations/043_whatsapp_provider.sql`
 > (adds `provider`, `provider_config` and `webhook_secret` to
 > `whatsapp_config`, makes `phone_number_id` optional for non-Meta rows and

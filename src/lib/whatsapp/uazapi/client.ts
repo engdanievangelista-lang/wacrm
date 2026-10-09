@@ -3,12 +3,45 @@ export interface UazapiEnv {
   adminToken: string
 }
 
+/**
+ * Normalised base URL, or null when `UAZAPI_URL` is not acceptable: it must
+ * be https (http only outside production, for a local UAZAPI), with no
+ * embedded credentials, query or fragment — the admin token travels to it.
+ */
+function parseBaseUrl(raw: string): string | null {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return null
+  }
+  const protocolOk =
+    url.protocol === 'https:' ||
+    (url.protocol === 'http:' && process.env.NODE_ENV !== 'production')
+  if (!protocolOk) return null
+  if (url.username || url.password || url.search || url.hash) return null
+  return `${url.origin}${url.pathname}`.replace(/\/+$/, '')
+}
+
+let warnedBadUrl = false
+
 /** Server-side UAZAPI configuration; null when not fully configured. */
 export function uazapiEnv(): UazapiEnv | null {
-  const baseUrl = process.env.UAZAPI_URL?.trim()
+  const rawUrl = process.env.UAZAPI_URL?.trim()
   const adminToken = process.env.UAZAPI_ADMIN_TOKEN?.trim()
-  if (!baseUrl || !adminToken) return null
-  return { baseUrl: baseUrl.replace(/\/+$/, ''), adminToken }
+  if (!rawUrl || !adminToken) return null
+  const baseUrl = parseBaseUrl(rawUrl)
+  if (!baseUrl) {
+    // Never echo the value: it may carry credentials.
+    if (!warnedBadUrl) {
+      warnedBadUrl = true
+      console.warn(
+        'UAZAPI_URL ignored: it must be an https URL without credentials, query or fragment (http is allowed only outside production). UAZAPI is disabled.'
+      )
+    }
+    return null
+  }
+  return { baseUrl, adminToken }
 }
 
 export function isUazapiEnabled(): boolean {
